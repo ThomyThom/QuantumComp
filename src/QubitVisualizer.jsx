@@ -2,12 +2,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 
 /**
- * QubitVisual: visual estilo 'esfera com linhas de campo' + plano grade distorcido
- * - interação com mouse (OrbitControls)
- * - animação automática
- * - HUD com probabilidades (verde->red)
+ * QubitVisualizer Aprimorado:
+ * - Pós-processamento com Efeito de Bloom para um brilho energético.
+ * - Sistema de partículas para simular "espuma quântica".
+ * - Materiais e luzes refinados para um visual mais realista e imersivo.
  */
 
 export default function QubitVisualizer() {
@@ -17,6 +20,8 @@ export default function QubitVisualizer() {
 
   useEffect(() => {
     const container = mountRef.current;
+    if (!container) return;
+
     const scene = new THREE.Scene();
     scene.fog = new THREE.FogExp2(0x000010, 0.06);
 
@@ -33,6 +38,7 @@ export default function QubitVisualizer() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
     container.appendChild(renderer.domElement);
 
     // Controls
@@ -53,6 +59,17 @@ export default function QubitVisualizer() {
     fill.position.set(-4, 2, -6);
     scene.add(fill);
 
+    // --- Pós-processamento com Bloom ---
+    const renderScene = new RenderPass(scene, camera);
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+    bloomPass.threshold = 0;
+    bloomPass.strength = 0.6; // Intensidade do brilho
+    bloomPass.radius = 0.2;   // Raio do brilho
+
+    const composer = new EffectComposer(renderer);
+    composer.addPass(renderScene);
+    composer.addPass(bloomPass);
+
     // --- Plano grade distorcido (shader) ---
     const planeSize = 40;
     const planeGeo = new THREE.PlaneGeometry(planeSize, planeSize, 256, 256);
@@ -71,7 +88,6 @@ export default function QubitVisualizer() {
         void main() {
           vUv = uv;
           vec3 pos = position;
-          // wave displacement, stronger nearer center
           float r = length(position.xz) / 10.0;
           pos.z += sin((position.x + time*0.8)*0.6 + r*5.0) * amp * (1.0 - r);
           pos.y += cos((position.y + time*0.6)*0.5 + r*4.0) * amp * (1.0 - r);
@@ -85,13 +101,11 @@ export default function QubitVisualizer() {
         varying vec2 vUv;
         varying float vWave;
         void main() {
-          // grid lines: create two scales
           vec2 gv = fract(vUv * 20.0) - 0.5;
           float line1 = 1.0 - smoothstep(0.0, 0.02, length(gv));
           vec2 gv2 = fract(vUv * 6.0) - 0.5;
           float line2 = 1.0 - smoothstep(0.0, 0.01, length(gv2));
           float grid = max(line1 * 0.9, line2 * 0.4);
-          // fade with distance from center to avoid clutter
           float fade = smoothstep(0.9, 0.0, length(vUv - 0.5));
           vec3 base = mix(vec3(0.01,0.02,0.04), color, 0.9);
           vec3 gcol = gridColor * (0.6 + 0.6 * vWave);
@@ -107,6 +121,33 @@ export default function QubitVisualizer() {
     plane.position.y = -1.2;
     scene.add(plane);
 
+    // --- Partículas de "Espuma Quântica" ---
+    const particleCount = 10000;
+    const particlePositions = new Float32Array(particleCount * 3);
+    for (let i = 0; i < particleCount; i++) {
+        const i3 = i * 3;
+        const radius = 3 + Math.random() * 5;
+        const u = Math.random();
+        const v = Math.random();
+        const theta = 2 * Math.PI * u;
+        const phi = Math.acos(2 * v - 1);
+        particlePositions[i3] = radius * Math.sin(phi) * Math.cos(theta);
+        particlePositions[i3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+        particlePositions[i3 + 2] = radius * Math.cos(phi);
+    }
+    const particleGeo = new THREE.BufferGeometry();
+    particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+    const particleMat = new THREE.PointsMaterial({
+        color: 0x88ddff,
+        size: 0.02,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+    });
+    const quantumFoam = new THREE.Points(particleGeo, particleMat);
+    scene.add(quantumFoam);
+
     // --- Núcleo emissivo (centro brilhante) ---
     const coreGeo = new THREE.SphereGeometry(0.12, 32, 32);
     const coreMat = new THREE.MeshBasicMaterial({ color: 0xffcf66 });
@@ -119,17 +160,9 @@ export default function QubitVisualizer() {
     // --- Esfera 'casca' translúcida com leve iridescência ---
     const shellGeo = new THREE.SphereGeometry(1, 96, 96);
     const shellMat = new THREE.MeshPhysicalMaterial({
-      color: 0x0b6bff,
-      metalness: 0.1,
-      roughness: 0.25,
-      transmission: 0.8, // glass-like
-      thickness: 0.6,
-      envMapIntensity: 0.6,
-      clearcoat: 0.6,
-      clearcoatRoughness: 0.2,
-      opacity: 0.95,
-      transparent: true,
-      side: THREE.DoubleSide,
+      color: 0x0b6bff, metalness: 0.1, roughness: 0.25, transmission: 0.8,
+      thickness: 0.6, envMapIntensity: 0.6, clearcoat: 0.6, clearcoatRoughness: 0.2,
+      opacity: 0.95, transparent: true, side: THREE.DoubleSide,
     });
     const shell = new THREE.Mesh(shellGeo, shellMat);
     scene.add(shell);
@@ -145,7 +178,6 @@ export default function QubitVisualizer() {
       const segments = 180;
       for (let s = 0; s <= segments; s++) {
         const t = (s / segments) * Math.PI * 2;
-        // parametric toroidal-ish loop around sphere; distort to look like field lines
         const r = 1.02 + 0.02 * Math.sin(t * 3 + i);
         const x = r * Math.sin(theta) * Math.cos(t + phiOff);
         const y = r * Math.cos(theta) * Math.cos(t * 0.5 + i * 0.1);
@@ -155,10 +187,7 @@ export default function QubitVisualizer() {
       const geom = new THREE.BufferGeometry().setFromPoints(pts);
       const mat = new THREE.LineBasicMaterial({
         color: new THREE.Color().setHSL(0.08 + 0.6 * (i / lineCount), 0.9, 0.6),
-        transparent: true,
-        opacity: 0.9,
-        blending: THREE.AdditiveBlending,
-        toneMapped: false,
+        transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, toneMapped: false,
       });
       lineMats.push({ geom, mat });
       const line = new THREE.Line(geom, mat);
@@ -166,16 +195,9 @@ export default function QubitVisualizer() {
     }
     scene.add(linesGroup);
 
-    // small glow ring near equator (subtle)
-    const ringGeo = new THREE.RingGeometry(1.05, 1.08, 64);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0x66e6ff, transparent: true, opacity: 0.06, side: THREE.DoubleSide });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = Math.PI / 2;
-    scene.add(ring);
-
     // --- marcador na superfície (ponta do vetor) ---
     const markerGeo = new THREE.SphereGeometry(0.045, 16, 16);
-    const markerMat = new THREE.MeshStandardMaterial({ color: 0xffee99, emissive: 0xffaa66, emissiveIntensity: 0.9 });
+    const markerMat = new THREE.MeshStandardMaterial({ color: 0xffee99, emissive: 0xffaa66, emissiveIntensity: 2.5 });
     const marker = new THREE.Mesh(markerGeo, markerMat);
     scene.add(marker);
 
@@ -193,14 +215,9 @@ export default function QubitVisualizer() {
     arrowGroup.add(cone);
     scene.add(arrowGroup);
 
-    // helper quaternions for smooth rotation
-    const qTarget = new THREE.Quaternion();
     const qTemp = new THREE.Quaternion();
+    const clock = new THREE.Clock();
 
-    // animation state
-    let time = 0;
-
-    // safe normalize
     const safeVec = (x, y, z) => {
       const v = new THREE.Vector3(x, y, z);
       if (!isFinite(x + y + z) || v.lengthSq() < 1e-9) return new THREE.Vector3(0, 1, 0);
@@ -209,7 +226,7 @@ export default function QubitVisualizer() {
 
     function animate() {
       rafRef.current = requestAnimationFrame(animate);
-      time += 0.01;
+      const time = clock.getElapsedTime();
 
       // ** qubit angles generated smoothly **
       const theta = THREE.MathUtils.clamp(
@@ -235,72 +252,58 @@ export default function QubitVisualizer() {
       // orient arrowGroup: our arrow points +Y; rotate +Y to targetVec
       const targetVec = safeVec(tx, ty, tz);
       qTemp.setFromUnitVectors(new THREE.Vector3(0, 1, 0), targetVec);
-      
-      // --- CORREÇÃO APLICADA AQUI ---
       arrowGroup.quaternion.slerp(qTemp, 0.14);
-
-      // also position arrowGroup at origin
       arrowGroup.position.set(0, 0, 0);
 
-      // rotate field lines slowly for motion
-      linesGroup.rotation.y = Math.sin(time * 0.2) * 0.15;
-      linesGroup.rotation.x = Math.cos(time * 0.13) * 0.08;
+      // rotate field lines with increased speed
+      linesGroup.rotation.y = Math.sin(time * 0.4) * 0.15;
+      linesGroup.rotation.x = Math.cos(time * 0.26) * 0.08;
+
+      // Animação da "Espuma Quântica"
+      quantumFoam.rotation.y = time * 0.05;
+      quantumFoam.rotation.x = time * 0.02;
 
       // animate plane shader uniform
       planeMat.uniforms.time.value = time * 0.6;
-      // gentle core pulse
       const pulse = 1.0 + 0.12 * Math.sin(time * 3.2);
       coreMesh.scale.set(pulse, pulse, pulse);
       coreLight.intensity = 1.4 + 0.6 * Math.abs(Math.sin(time * 3.2));
 
       controls.update();
-      renderer.render(scene, camera);
+      composer.render();
     }
 
     animate();
 
-    // Resize
     function onResize() {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
     }
     window.addEventListener("resize", onResize, { passive: true });
 
-    // Cleanup and dispose
-    // Cleanup and dispose
     return () => {
       cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize", onResize);
-
-      // dispose geometries & materials
-      shellGeo.dispose?.();
-      shellMat.dispose?.();
-      planeGeo.dispose();
-      planeMat.dispose();
-      coreGeo.dispose?.();
-      coreMat.dispose?.();
-      shaftGeo.dispose?.();
-      shaftMat.dispose?.();
-      coneGeo.dispose?.();
-      coneMat.dispose?.();
-      markerGeo.dispose?.();
-      markerMat.dispose?.();
-      // A linha "particles &&..." foi removida daqui
-      lineMats.forEach(({ geom, mat }) => {
-        geom.dispose();
-        mat.dispose();
-      });
+      
+      shellGeo.dispose?.(); shellMat.dispose?.();
+      planeGeo.dispose(); planeMat.dispose();
+      coreGeo.dispose?.(); coreMat.dispose?.();
+      shaftGeo.dispose?.(); shaftMat.dispose?.();
+      coneGeo.dispose?.(); coneMat.dispose?.();
+      markerGeo.dispose?.(); markerMat.dispose?.();
+      particleGeo.dispose(); particleMat.dispose();
+      lineMats.forEach(({ geom, mat }) => { geom.dispose(); mat.dispose(); });
 
       controls.dispose();
+      composer.dispose();
       renderer.dispose();
 
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // HUD color gradient green->red
   function getColor(p0) {
     const r = Math.round(255 * (1 - p0));
     const g = Math.round(255 * p0);
@@ -328,17 +331,16 @@ export default function QubitVisualizer() {
         <div style={{ fontWeight: 700, marginBottom: 6 }}>Qubit Visualizer</div>
         <div>
           <span style={{ color: getColor(probabilities.p0), fontWeight: 600 }}>
-            |0⟩: {(probabilities.p0 * 100).toFixed(2)}%
+            |0⟩ (Certeza): {(probabilities.p0 * 100).toFixed(2)}%
           </span>
         </div>
         <div>
           <span style={{ color: getColor(probabilities.p1), fontWeight: 600 }}>
-            |1⟩: {(probabilities.p1 * 100).toFixed(2)}%
+            |1⟩ (Incerteza): {(probabilities.p1 * 100).toFixed(2)}%
           </span>
         </div>
         <div style={{ marginTop: 8, color: "#cfcfcf", fontSize: 12 }}>
-          O ponto brilhante indica o estado do qubit na superfície (esfera). As linhas representam
-          campos/órbitas — o vetor muda automaticamente.
+          Esta esfera representa as possibilidades de um qubit. A seta aponta para seu estado atual, que está sempre em uma "superposição" entre 0 e 1 até ser medido.
         </div>
       </div>
 
